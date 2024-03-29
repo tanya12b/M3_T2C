@@ -1,0 +1,86 @@
+#include <mpi.h> // MPI Library
+#include <iostream> // Input/output stream
+#include <vector> // Vector container
+#include <algorithm> // Algorithms library
+#include <ctime> // Time functions
+using namespace std; // Standard namespace
+
+void parallelPartition(vector<int>& data, int start, int end) { // Function to perform parallel partitioning
+    if (start < end) { // Check if start index is less than end index
+        int pivot = data[(start + end) / 2]; // Choose pivot element
+        int i = start - 1; // Initialize index i
+        int j = end + 1; // Initialize index j
+        while (true) { // Infinite loop
+            do { i++; } while (data[i] < pivot); // Increment i until data[i] is greater than or equal to pivot
+            do { j--; } while (data[j] > pivot); // Decrement j until data[j] is less than or equal to pivot
+            if (i >= j) break; // If i and j cross, break the loop
+            swap(data[i], data[j]); // Swap elements at indices i and j
+        }
+        parallelPartition(data, start, j); // Recursively call partitioning for left partition
+        parallelPartition(data, j + 1, end); // Recursively call partitioning for right partition
+    }
+}
+
+int main(int argc, char ** argv) { // Main function
+    MPI_Init(&argc, &argv); // Initialize MPI environment
+
+    int rank, numProcesses; // Declare variables for rank and number of processes
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank); // Get rank of current process
+    MPI_Comm_size(MPI_COMM_WORLD, &numProcesses); // Get total number of processes
+
+    const int dataSize = 20; // Size of data array
+    const int chunkSize = dataSize / numProcesses; // Calculate chunk size for each process
+
+    vector<int> dataArray(dataSize); // Declare data array
+    vector<int> localChunk(chunkSize); // Declare local chunk for each process
+
+    // Generate random numbers on all processes
+    srand(time(NULL) + rank); // Seed random number generator using rank to avoid identical sequences
+    for (int i = 0; i < dataSize; i++) { // Loop through data array
+        dataArray[i] = rand() % 100; // Generate random numbers and store in data array
+    }
+
+    if (rank == 0) { // If root process
+        cout << "Unsorted array: "; // Print message
+        for (int i = 0; i < dataSize; i++) { // Loop through data array
+            cout << dataArray[i] << " "; // Print elements of data array
+        }
+        cout << endl; // Print newline
+    }
+
+    double startTime, endTime; // Declare variables for start and end time
+
+    // Record start time
+    startTime = MPI_Wtime(); // Get current time
+
+    // Scatter the array chunks to different processes
+    MPI_Scatter(&dataArray[0], chunkSize, MPI_INT, &localChunk[0], chunkSize, MPI_INT, 0, MPI_COMM_WORLD); // Scatter data chunks to processes
+
+    // Each process sorts its own chunk
+    parallelPartition(localChunk, 0, chunkSize - 1); // Call parallel partitioning for local chunk
+
+    // Gather all the sorted chunks back to the root process
+    MPI_Gather(&localChunk[0], chunkSize, MPI_INT, &dataArray[0], chunkSize, MPI_INT, 0, MPI_COMM_WORLD); // Gather sorted chunks
+
+    // Root process merges the sorted chunks
+    if (rank == 0) { // If root process
+        vector<int> sortedArray(dataSize); // Declare sorted array
+        merge(dataArray.begin(), dataArray.end(), dataArray.begin() + chunkSize, dataArray.end(), sortedArray.begin()); // Merge sorted chunks
+        cout << "Sorted array: "; // Print message
+        for (int i = 0; i < dataSize; i++) { // Loop through sorted array
+            cout << sortedArray[i] << " "; // Print elements of sorted array
+        }
+        cout << endl; // Print newline
+    }
+
+    // Record end time
+    endTime = MPI_Wtime(); // Get current time
+
+    // Output execution time
+    if (rank == 0) { // If root process
+        cout << "Execution time: " << endTime - startTime << " seconds" << endl; // Print execution time
+    }
+
+    MPI_Finalize(); // Finalize MPI environment
+    return 0; // Return success
+}
