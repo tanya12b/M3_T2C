@@ -1,0 +1,117 @@
+#include <iostream> // Input/output stream
+#include <vector> // Vector container
+#include <algorithm> // Algorithms library
+#include <CL/cl.hpp> // OpenCL C++ bindings
+
+using namespace std; // Standard namespace
+
+// The OpenCL kernel function for sorting a chunk of data
+const char* alternateKernelSource =
+"void merge(global int* data, int start, int mid, int end) {\n" // Merge function for merging two sorted arrays
+"int* temp = new int[end - start + 1];\n" // Temporary array for merging
+"int i = start, j = mid+1, k = 0;\n" // Indices for merging
+"while (i <= mid && j <= end) {\n" // Merge elements from both halves into temp array
+"if (data[i] <= data[j]) {\n" // Compare elements and copy to temp
+"temp[k] = data[i];\n"
+"i++;\n"
+"} else {\n"
+"temp[k] = data[j];\n"
+"j++;\n"
+"}\n"
+"k++;\n"
+"}\n"
+"while (i <= mid) {\n" // Copy remaining elements of left half
+"temp[k] = data[i];\n"
+"i++;\n"
+"k++;\n"
+"}\n"
+"while (j <= end) {\n" // Copy remaining elements of right half
+"temp[k] = data[j];\n"
+"j++;\n"
+"k++;\n"
+"}\n"
+"for (int i = 0; i < k; i++) {\n" // Copy merged elements back to data array
+"data[start+i] = temp[i];\n"
+"}\n"
+"delete[] temp;\n" // Free memory
+"}\n"
+"_kernel void alternateSort(_global int* data, int left, int right) {\n" // Kernel function for quicksort
+"if (left >= right) return;\n" // Base case: return if partition has one element
+"int pivot = data[(left + right) / 2];\n" // Choose pivot element
+"int i = left;\n" // Initialize left index
+"int j = right;\n" // Initialize right index
+"while (i <= j) {\n" // Partitioning loop
+"while (data[i] < pivot) i++;\n" // Move i to the right until it finds element >= pivot
+"while (data[j] > pivot) j--;\n" // Move j to the left until it finds element <= pivot
+"if (i <= j) {\n" // Swap elements if i and j haven't crossed
+"int temp = data[i];\n"
+"data[i] = data[j];\n"
+"data[j] = temp;\n"
+"i++;\n"
+"j--;\n"
+"}\n"
+"}\n"
+"if (left < j) alternateSort(data, left, j);\n" // Recursively sort left partition
+"if (i < right) alternateSort(data, i, right);\n" // Recursively sort right partition
+"}\n";
+
+int main() {
+    // Define the input array
+    vector<int> inputData = {5, 2, 9, 1, 5, 6, 3, 8, 7, 4}; // Input unsorted array
+    int dataSize = inputData.size(); // Get size of input array
+
+    // Set up OpenCL
+    cl::Platform platform; // OpenCL platform
+    cl::Device device; // OpenCL device
+    cl::Context context; // OpenCL context
+    cl::Program::Sources sources; // OpenCL program sources
+    cl::Program program; // OpenCL program
+    cl::Kernel kernel; // OpenCL kernel
+    cl::CommandQueue queue; // OpenCL command queue
+
+    // Initialize OpenCL context and get available devices
+    cl::Platform::get(&platform); // Get available platforms
+    platform.getDevices(CL_DEVICE_TYPE_GPU, &device); // Get GPU devices
+    context = cl::Context(device); // Create OpenCL context
+    sources.push_back({alternateKernelSource, strlen(alternateKernelSource)}); // Load kernel source code
+    program = cl::Program(context, sources); // Create OpenCL program
+
+    // Build the OpenCL program
+    try {
+        program.build({device}); // Build program for the selected device
+    } catch (cl::Error& e) {
+        cout << "Build status: " << program.getBuildInfo<CL_PROGRAM_BUILD_STATUS>(device) << endl; // Print build status
+        cout << "Build log:\t " << program.getBuildInfo<CL_PROGRAM_BUILD_LOG>(device) << endl; // Print build log
+        throw e;
+    }
+
+    // Create OpenCL kernel
+    kernel = cl::Kernel(program, "alternateSort"); // Create kernel object
+
+    // Create OpenCL buffer for input data
+    cl::Buffer inputBuffer(context, CL_MEM_READ_WRITE, sizeof(int) * dataSize); // Create buffer for input array
+
+    // Copy data from host to device
+    queue.enqueueWriteBuffer(inputBuffer, CL_TRUE, 0, sizeof(int) * dataSize, inputData.data()); // Enqueue write buffer command
+
+    // Set kernel arguments
+    kernel.setArg(0, inputBuffer); // Set kernel argument for input buffer
+    kernel.setArg(1, 0); // Set kernel argument for left index
+    kernel.setArg(2, dataSize - 1); // Set kernel argument for right index
+
+    // Execute the kernel
+    queue.enqueueNDRangeKernel(kernel, cl::NullRange, cl::NDRange(dataSize), cl::NullRange); // Enqueue kernel execution command
+    queue.finish(); // Wait for all commands in the queue to finish
+
+    // Read the sorted data back to host
+    queue.enqueueReadBuffer(inputBuffer, CL_TRUE, 0, sizeof(int) * dataSize, inputData.data()); // Enqueue read buffer command
+
+    // Output sorted array
+    cout << "Sorted array: ";
+    for (int i = 0; i < dataSize; i++) { // Loop through sorted array
+        cout << inputData[i] << " "; // Output each element
+    }
+    cout << endl; // Newline
+
+    return 0; // Return success
+}
