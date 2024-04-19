@@ -1,117 +1,115 @@
-#include <iostream> // Input/output stream
-#include <vector> // Vector container
-#include <algorithm> // Algorithms library
-#include <CL/cl.hpp> // OpenCL C++ bindings
+#include <iostream>
+#include <vector>
+#include <mpi.h>
+#include <ctime>
+#include <random>
+#include <CL/cl.h>
 
-using namespace std; // Standard namespace
+void quick_sort(std::vector<int>& array, int left, int right) {
+    int i, j, pivot, temp;
 
-// The OpenCL kernel function for sorting a chunk of data
-const char* alternateKernelSource =
-"void merge(global int* data, int start, int mid, int end) {\n" // Merge function for merging two sorted arrays
-"int* temp = new int[end - start + 1];\n" // Temporary array for merging
-"int i = start, j = mid+1, k = 0;\n" // Indices for merging
-"while (i <= mid && j <= end) {\n" // Merge elements from both halves into temp array
-"if (data[i] <= data[j]) {\n" // Compare elements and copy to temp
-"temp[k] = data[i];\n"
-"i++;\n"
-"} else {\n"
-"temp[k] = data[j];\n"
-"j++;\n"
-"}\n"
-"k++;\n"
-"}\n"
-"while (i <= mid) {\n" // Copy remaining elements of left half
-"temp[k] = data[i];\n"
-"i++;\n"
-"k++;\n"
-"}\n"
-"while (j <= end) {\n" // Copy remaining elements of right half
-"temp[k] = data[j];\n"
-"j++;\n"
-"k++;\n"
-"}\n"
-"for (int i = 0; i < k; i++) {\n" // Copy merged elements back to data array
-"data[start+i] = temp[i];\n"
-"}\n"
-"delete[] temp;\n" // Free memory
-"}\n"
-"_kernel void alternateSort(_global int* data, int left, int right) {\n" // Kernel function for quicksort
-"if (left >= right) return;\n" // Base case: return if partition has one element
-"int pivot = data[(left + right) / 2];\n" // Choose pivot element
-"int i = left;\n" // Initialize left index
-"int j = right;\n" // Initialize right index
-"while (i <= j) {\n" // Partitioning loop
-"while (data[i] < pivot) i++;\n" // Move i to the right until it finds element >= pivot
-"while (data[j] > pivot) j--;\n" // Move j to the left until it finds element <= pivot
-"if (i <= j) {\n" // Swap elements if i and j haven't crossed
-"int temp = data[i];\n"
-"data[i] = data[j];\n"
-"data[j] = temp;\n"
-"i++;\n"
-"j--;\n"
-"}\n"
-"}\n"
-"if (left < j) alternateSort(data, left, j);\n" // Recursively sort left partition
-"if (i < right) alternateSort(data, i, right);\n" // Recursively sort right partition
-"}\n";
+    if (left < right) {
+        pivot = left;
+        i = left;
+        j = right;
 
-int main() {
-    // Define the input array
-    vector<int> inputData = {5, 2, 9, 1, 5, 6, 3, 8, 7, 4}; // Input unsorted array
-    int dataSize = inputData.size(); // Get size of input array
+        // Partitioning step
+        while (i < j) {
+            while (array[i] <= array[pivot] && i <= right)
+                i++;
+            while (array[j] > array[pivot])
+                j--;
+            if (i < j) {
+                temp = array[i];
+                array[i] = array[j];
+                array[j] = temp;
+            }
+        }
 
-    // Set up OpenCL
-    cl::Platform platform; // OpenCL platform
-    cl::Device device; // OpenCL device
-    cl::Context context; // OpenCL context
-    cl::Program::Sources sources; // OpenCL program sources
-    cl::Program program; // OpenCL program
-    cl::Kernel kernel; // OpenCL kernel
-    cl::CommandQueue queue; // OpenCL command queue
+        // Swap pivot with element at position j
+        temp = array[pivot];
+        array[pivot] = array[j];
+        array[j] = temp;
 
-    // Initialize OpenCL context and get available devices
-    cl::Platform::get(&platform); // Get available platforms
-    platform.getDevices(CL_DEVICE_TYPE_GPU, &device); // Get GPU devices
-    context = cl::Context(device); // Create OpenCL context
-    sources.push_back({alternateKernelSource, strlen(alternateKernelSource)}); // Load kernel source code
-    program = cl::Program(context, sources); // Create OpenCL program
+        // Recursively sort sub-arrays
+        quick_sort(array, left, j - 1);
+        quick_sort(array, j + 1, right);
+    }
+}
 
-    // Build the OpenCL program
-    try {
-        program.build({device}); // Build program for the selected device
-    } catch (cl::Error& e) {
-        cout << "Build status: " << program.getBuildInfo<CL_PROGRAM_BUILD_STATUS>(device) << endl; // Print build status
-        cout << "Build log:\t " << program.getBuildInfo<CL_PROGRAM_BUILD_LOG>(device) << endl; // Print build log
-        throw e;
+int main(int argc, char **argv) {
+    int rank, size, a = 100; // Fixed array size
+    std::vector<int> array, chunk;
+
+    MPI_Init(&argc, &argv);
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &size);
+
+    if (rank == 0) {
+        array.resize(a);
+        std::random_device rd;
+        std::mt19937 gen(rd());
+        std::uniform_int_distribution<> dis(1, 1000); // Generate random numbers between 1 and 1000
+
+        for (int i = 0; i < a; ++i)
+            array[i] = dis(gen); // Assign random numbers to the array
+
+        quick_sort(array, 0, a - 1);
     }
 
-    // Create OpenCL kernel
-    kernel = cl::Kernel(program, "alternateSort"); // Create kernel object
+    MPI_Bcast(&a, 1, MPI_INT, 0, MPI_COMM_WORLD);
 
-    // Create OpenCL buffer for input data
-    cl::Buffer inputBuffer(context, CL_MEM_READ_WRITE, sizeof(int) * dataSize); // Create buffer for input array
+    chunk.resize(a / size);
+    MPI_Scatter(array.data(), a / size, MPI_INT, chunk.data(), a / size, MPI_INT, 0, MPI_COMM_WORLD);
 
-    // Copy data from host to device
-    queue.enqueueWriteBuffer(inputBuffer, CL_TRUE, 0, sizeof(int) * dataSize, inputData.data()); // Enqueue write buffer command
+    clock_t start_time = clock();
+    quick_sort(chunk, 0, a / size - 1);
+    clock_t end_time = clock();
 
-    // Set kernel arguments
-    kernel.setArg(0, inputBuffer); // Set kernel argument for input buffer
-    kernel.setArg(1, 0); // Set kernel argument for left index
-    kernel.setArg(2, dataSize - 1); // Set kernel argument for right index
-
-    // Execute the kernel
-    queue.enqueueNDRangeKernel(kernel, cl::NullRange, cl::NDRange(dataSize), cl::NullRange); // Enqueue kernel execution command
-    queue.finish(); // Wait for all commands in the queue to finish
-
-    // Read the sorted data back to host
-    queue.enqueueReadBuffer(inputBuffer, CL_TRUE, 0, sizeof(int) * dataSize, inputData.data()); // Enqueue read buffer command
-
-    // Output sorted array
-    cout << "Sorted array: ";
-    for (int i = 0; i < dataSize; i++) { // Loop through sorted array
-        cout << inputData[i] << " "; // Output each element
+    double duration = (double)(end_time - start_time) / ((double)CLOCKS_PER_SEC / 1000000); // cast to double before computing duration
+    if (rank == 0) {
+        std::cout << "Execution time is " << duration << " microseconds\n";
     }
-    cout << endl; // Newline
 
-    return 0; // Return success
+    for (int order = 1; order < size; order *= 2) {
+        if (rank % (2 * order) != 0) {
+            MPI_Send(chunk.data(), a / size, MPI_INT, rank - order, 0, MPI_COMM_WORLD);
+            break;
+        }
+        int recv_size = (rank + order) < size ? a / size : a - (rank + order) * (a / size);
+
+        std::vector<int> other(recv_size);
+        MPI_Recv(other.data(), recv_size, MPI_INT, rank + order, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+
+        std::vector<int> temp(a / size + recv_size);
+        int i = 0, j = 0, k = 0;
+        while (i < a / size && j < recv_size) {
+            if (chunk[i] < other[j])
+                temp[k++] = chunk[i++];
+            else
+                temp[k++] = other[j++];
+        }
+        while (i < a / size)
+            temp[k++] = chunk[i++];
+        while (j < recv_size)
+            temp[k++] = other[j++];
+
+        chunk = temp;
+    }
+
+    if (rank == 0) {
+        array.resize(a);
+    }
+    MPI_Gather(chunk.data(), a / size, MPI_INT, array.data(), a / size, MPI_INT, 0, MPI_COMM_WORLD);
+
+    if (rank == 0) {
+        std::cout << "Sorted array: ";
+        for (int i = 0; i < a; ++i) {
+            std::cout << array[i] << " ";
+        }
+        std::cout << std::endl;
+    }
+
+    MPI_Finalize();
+    return 0;
 }
