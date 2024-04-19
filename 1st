@@ -1,86 +1,139 @@
-#include <mpi.h> // MPI Library
-#include <iostream> // Input/output stream
-#include <vector> // Vector container
-#include <algorithm> // Algorithms library
-#include <ctime> // Time functions
-using namespace std; // Standard namespace
+#include <iostream>
+#include <vector>
+#include <mpi.h>
+#include <ctime>
+#include <random>
 
-void parallelPartition(vector<int>& data, int start, int end) { // Function to perform parallel partitioning
-    if (start < end) { // Check if start index is less than end index
-        int pivot = data[(start + end) / 2]; // Choose pivot element
-        int i = start - 1; // Initialize index i
-        int j = end + 1; // Initialize index j
-        while (true) { // Infinite loop
-            do { i++; } while (data[i] < pivot); // Increment i until data[i] is greater than or equal to pivot
-            do { j--; } while (data[j] > pivot); // Decrement j until data[j] is less than or equal to pivot
-            if (i >= j) break; // If i and j cross, break the loop
-            swap(data[i], data[j]); // Swap elements at indices i and j
+// Function to perform quicksort on a vector
+void quick_sort(std::vector<int>& array, int left, int right) {
+    int i, j, pivot, temp;
+
+    // Partitioning step
+    if (left < right) {
+        pivot = left;
+        i = left;
+        j = right;
+
+        while (i < j) {
+            while (array[i] <= array[pivot] && i <= right)
+                i++;
+            while (array[j] > array[pivot])
+                j--;
+            if (i < j) {
+                temp = array[i];
+                array[i] = array[j];
+                array[j] = temp;
+            }
         }
-        parallelPartition(data, start, j); // Recursively call partitioning for left partition
-        parallelPartition(data, j + 1, end); // Recursively call partitioning for right partition
+
+        // Swap pivot with element at position j
+        temp = array[pivot];
+        array[pivot] = array[j];
+        array[j] = temp;
+
+        // Recursively sort sub-arrays
+        quick_sort(array, left, j - 1);
+        quick_sort(array, j + 1, right);
     }
 }
 
-int main(int argc, char ** argv) { // Main function
-    MPI_Init(&argc, &argv); // Initialize MPI environment
+int main(int argc, char **argv) {
+    int rank, size, a = 100; // Fixed array size
+    std::vector<int> array, chunk;
 
-    int rank, numProcesses; // Declare variables for rank and number of processes
-    MPI_Comm_rank(MPI_COMM_WORLD, &rank); // Get rank of current process
-    MPI_Comm_size(MPI_COMM_WORLD, &numProcesses); // Get total number of processes
+    MPI_Init(&argc, &argv);
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &size);
 
-    const int dataSize = 20; // Size of data array
-    const int chunkSize = dataSize / numProcesses; // Calculate chunk size for each process
+    // Master process initializes the array
+    if (rank == 0) {
+        array.resize(a);
+        std::random_device rd;
+        std::mt19937 gen(rd());
+        std::uniform_int_distribution<> dis(1, 1000); // Generate random numbers between 1 and 1000
 
-    vector<int> dataArray(dataSize); // Declare data array
-    vector<int> localChunk(chunkSize); // Declare local chunk for each process
+        // Fill the array with random numbers
+        for (int i = 0; i < a; ++i)
+            array[i] = dis(gen); // Assign random numbers to the array
 
-    // Generate random numbers on all processes
-    srand(time(NULL) + rank); // Seed random number generator using rank to avoid identical sequences
-    for (int i = 0; i < dataSize; i++) { // Loop through data array
-        dataArray[i] = rand() % 100; // Generate random numbers and store in data array
+        // Perform quicksort on the entire array
+        quick_sort(array, 0, a - 1);
     }
 
-    if (rank == 0) { // If root process
-        cout << "Unsorted array: "; // Print message
-        for (int i = 0; i < dataSize; i++) { // Loop through data array
-            cout << dataArray[i] << " "; // Print elements of data array
+    // Broadcast the array size to all processes
+    MPI_Bcast(&a, 1, MPI_INT, 0, MPI_COMM_WORLD);
+
+    // Allocate memory for the local chunk
+    chunk.resize(a / size);
+
+    // Scatter the array to all processes
+    MPI_Scatter(array.data(), a / size, MPI_INT, chunk.data(), a / size, MPI_INT, 0, MPI_COMM_WORLD);
+
+    // Record the start time
+    clock_t start_time = clock();
+
+    // Perform quicksort on the local chunk
+    quick_sort(chunk, 0, a / size - 1);
+
+    // Record the end time
+    clock_t end_time = clock();
+
+    // Calculate the duration
+    double duration = (double)(end_time - start_time) / ((double)CLOCKS_PER_SEC / 1000000);
+
+    // Print execution time (only by the master process)
+    if (rank == 0) {
+        std::cout << "Execution time is " << duration << " microseconds\n";
+    }
+
+    // Perform merging of sorted chunks using hypercube communication pattern
+    for (int order = 1; order < size; order *= 2) {
+        if (rank % (2 * order) != 0) {
+            // Send the chunk to the neighbor process
+            MPI_Send(chunk.data(), a / size, MPI_INT, rank - order, 0, MPI_COMM_WORLD);
+            break;
         }
-        cout << endl; // Print newline
-    }
+        int recv_size = (rank + order) < size ? a / size : a - (rank + order) * (a / size);
 
-    double startTime, endTime; // Declare variables for start and end time
+        // Receive the chunk from the neighbor process
+        std::vector<int> other(recv_size);
+        MPI_Recv(other.data(), recv_size, MPI_INT, rank + order, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
 
-    // Record start time
-    startTime = MPI_Wtime(); // Get current time
-
-    // Scatter the array chunks to different processes
-    MPI_Scatter(&dataArray[0], chunkSize, MPI_INT, &localChunk[0], chunkSize, MPI_INT, 0, MPI_COMM_WORLD); // Scatter data chunks to processes
-
-    // Each process sorts its own chunk
-    parallelPartition(localChunk, 0, chunkSize - 1); // Call parallel partitioning for local chunk
-
-    // Gather all the sorted chunks back to the root process
-    MPI_Gather(&localChunk[0], chunkSize, MPI_INT, &dataArray[0], chunkSize, MPI_INT, 0, MPI_COMM_WORLD); // Gather sorted chunks
-
-    // Root process merges the sorted chunks
-    if (rank == 0) { // If root process
-        vector<int> sortedArray(dataSize); // Declare sorted array
-        merge(dataArray.begin(), dataArray.end(), dataArray.begin() + chunkSize, dataArray.end(), sortedArray.begin()); // Merge sorted chunks
-        cout << "Sorted array: "; // Print message
-        for (int i = 0; i < dataSize; i++) { // Loop through sorted array
-            cout << sortedArray[i] << " "; // Print elements of sorted array
+        // Merge the local chunk and received chunk
+        std::vector<int> temp(a / size + recv_size);
+        int i = 0, j = 0, k = 0;
+        while (i < a / size && j < recv_size) {
+            if (chunk[i] < other[j])
+                temp[k++] = chunk[i++];
+            else
+                temp[k++] = other[j++];
         }
-        cout << endl; // Print newline
+        while (i < a / size)
+            temp[k++] = chunk[i++];
+        while (j < recv_size)
+            temp[k++] = other[j++];
+
+        // Update the local chunk
+        chunk = temp;
     }
 
-    // Record end time
-    endTime = MPI_Wtime(); // Get current time
-
-    // Output execution time
-    if (rank == 0) { // If root process
-        cout << "Execution time: " << endTime - startTime << " seconds" << endl; // Print execution time
+    // Resize the array to accommodate the sorted data (only by the master process)
+    if (rank == 0) {
+        array.resize(a);
     }
 
-    MPI_Finalize(); // Finalize MPI environment
-    return 0; // Return success
+    // Gather the sorted chunks from all processes
+    MPI_Gather(chunk.data(), a / size, MPI_INT, array.data(), a / size, MPI_INT, 0, MPI_COMM_WORLD);
+
+    // Print the sorted array (only by the master process)
+    if (rank == 0) {
+        std::cout << "Sorted array: ";
+        for (int i = 0; i < a; ++i) {
+            std::cout << array[i] << " ";
+        }
+        std::cout << std::endl;
+    }
+
+    MPI_Finalize();
+    return 0;
 }
